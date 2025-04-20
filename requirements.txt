@@ -2,7 +2,8 @@ fastapi
 uvicorn
 transformers
 torch
-onnxruntime
 scikit-learn
-python-whois
 beautifulsoup4
+python-whois
+onnxruntime
+pandas
