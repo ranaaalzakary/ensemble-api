@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+transformers
+torch
+onnxruntime
+scikit-learn
+python-whois
+beautifulsoup4
