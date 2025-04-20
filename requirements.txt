@@ -3,7 +3,9 @@ uvicorn
 transformers
 torch
 scikit-learn
+xgboost
+pandas
 beautifulsoup4
 python-whois
 onnxruntime
-pandas
+joblib
