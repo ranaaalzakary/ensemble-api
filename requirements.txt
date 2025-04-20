@@ -9,3 +9,5 @@ beautifulsoup4
 python-whois
 onnxruntime
 joblib
+numpy
+bs4
