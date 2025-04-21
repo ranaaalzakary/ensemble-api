@@ -23,8 +23,8 @@ xgb_count_vec = joblib.load("xgb_count_vectorizer.pkl")
 xgb_tfidf_vec = joblib.load("xgb_tfidf_vectorizer.pkl")
 
 # === Load BERT ===
-tokenizer = MobileBertTokenizer.from_pretrained("./")
-bert_model = MobileBertForSequenceClassification.from_pretrained("./")
+tokenizer = MobileBertTokenizer.from_pretrained("google/mobilebert-uncased")
+bert_model = MobileBertForSequenceClassification.from_pretrained("google/mobilebert-uncased")
 bert_model.eval()
 
 # === Feature Extraction ===
