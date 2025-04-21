@@ -99,7 +99,7 @@ async def predict_email(data: EmailRequest):
     bert_pred = int(bert_conf >= 0.5)
 
     # Final decision
-    final_score = (rf_conf * rf_pred + xgb_conf * xgb_pred + bert_conf * bert_pred) / 3
+    final_score = (0.5 * bert_conf * bert_pred) + (0.25 * rf_conf * rf_pred) + (0.25 * xgb_conf * xgb_pred)
     final_pred = int(final_score >= 0.5)
 
     return {
