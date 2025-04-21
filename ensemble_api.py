@@ -55,7 +55,13 @@ def extract_host_features(text):
 
 # === Predict with MobileBERT ===
 def predict_bert(text):
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, padding=True)
+    inputs = tokenizer(
+        text,
+        return_tensors="pt",
+        truncation=True,
+        padding=True,
+        max_length=512  # Fixes the warning
+    )
     with torch.no_grad():
         outputs = bert_model(**inputs)
         probs = torch.softmax(outputs.logits, dim=1)
@@ -67,6 +73,10 @@ app = FastAPI()
 class EmailRequest(BaseModel):
     email: str
 
+@app.get("/")
+def root():
+    return {"message": "Ensemble API is running."}
+
 @app.post("/predict")
 async def predict_email(data: EmailRequest):
     email_text = data.email
@@ -75,7 +85,7 @@ async def predict_email(data: EmailRequest):
     html_feats = extract_html_features(email_text)
     lexical_feats = extract_lexical_features(email_text)
     host_feats = extract_host_features(email_text)
-    handcrafted = html_feats + lexical_feats + host_feats  # total ~7 features
+    handcrafted = html_feats + lexical_feats + host_feats
 
     # Vectorized features
     rf_vec_tfidf = rf_tfidf_vec.transform([email_text]).toarray()
@@ -86,7 +96,7 @@ async def predict_email(data: EmailRequest):
     xgb_vec_count = xgb_count_vec.transform([email_text]).toarray()
     xgb_input = np.concatenate((handcrafted, xgb_vec_tfidf[0], xgb_vec_count[0]))
 
-    # RF + XGB predictions
+    # Model predictions
     rf_probs = rf_model.predict_proba([rf_input])[0]
     xgb_probs = xgb_model.predict_proba([xgb_input])[0]
     rf_conf = float(np.max(rf_probs))
@@ -94,12 +104,15 @@ async def predict_email(data: EmailRequest):
     rf_pred = int(np.argmax(rf_probs))
     xgb_pred = int(np.argmax(xgb_probs))
 
-    # BERT prediction
+    # BERT
     bert_conf = predict_bert(email_text)
-    bert_pred = int(bert_conf >= 0.5)
 
-    # Final decision
-    final_score = (0.5 * bert_conf * bert_pred) + (0.25 * rf_conf * rf_pred) + (0.25 * xgb_conf * xgb_pred)
+    # Final weighted voting (50% BERT, 25% RF, 25% XGB)
+    final_score = (
+        0.5 * bert_conf +
+        0.25 * rf_conf * rf_pred +
+        0.25 * xgb_conf * xgb_pred
+    )
     final_pred = int(final_score >= 0.5)
 
     return {
