@@ -1,49 +1,62 @@
 import warnings
+# Suppress user warnings to keep the output clean
 warnings.filterwarnings("ignore", category=UserWarning)
 
-import joblib
-import torch
-import numpy as np
-import pandas as pd
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse
-import whois
-from transformers import MobileBertTokenizer, MobileBertForSequenceClassification
-from fastapi import FastAPI
-from pydantic import BaseModel
+# === Import necessary libraries ===
+import joblib  # For loading trained ML models and vectorizers
+import torch  # For using PyTorch-based MobileBERT
+import numpy as np  # For array operations
+import pandas as pd  # For data handling
+from bs4 import BeautifulSoup  # For HTML parsing
+from urllib.parse import urlparse  # For extracting domains
+import whois  # For getting domain creation dates
+from transformers import MobileBertTokenizer, MobileBertForSequenceClassification  # For BERT
+from fastapi import FastAPI  # For creating the API
+from pydantic import BaseModel  # For request body validation
 
-# === Load models ===
-rf_model = joblib.load("random_forest_model.pkl")
-xgb_model = joblib.load("xgboost_model.pkl")
+# === Initialize FastAPI app ===
+app = FastAPI()
 
-# === Load vectorizers ===
-rf_count_vec = joblib.load("count_vectorizer.pkl")
-rf_tfidf_vec = joblib.load("tfidf_vectorizer.pkl")
-xgb_count_vec = joblib.load("xgb_count_vectorizer.pkl")
-xgb_tfidf_vec = joblib.load("xgb_tfidf_vectorizer.pkl")
+# Define the expected request structure
+class EmailRequest(BaseModel):
+    email: str
 
-# === Load BERT ===
-tokenizer = MobileBertTokenizer.from_pretrained("google/mobilebert-uncased")
-bert_model = MobileBertForSequenceClassification.from_pretrained("google/mobilebert-uncased")
-bert_model.eval()
+# === Load pre-trained models ===
+rf_model = joblib.load("random_forest_model.pkl")  # Random Forest
+xgb_model = joblib.load("xgboost_model.pkl")  # XGBoost
 
-# === Feature Extraction ===
+# === Load vectorizers for feature transformation ===
+tfidf = joblib.load("tfidf_vectorizer.pkl")  # TF-IDF for RF
+count = joblib.load("count_vectorizer.pkl")  # Count for RF
+xgb_tfidf = joblib.load("xgb_tfidf_vectorizer.pkl")  # TF-IDF for XGB
+xgb_count = joblib.load("xgb_count_vectorizer.pkl")  # Count for XGB
+
+# === Load fine-tuned MobileBERT model ===
+bert_path = "./"
+tokenizer = MobileBertTokenizer.from_pretrained(bert_path)
+bert_model = MobileBertForSequenceClassification.from_pretrained(bert_path)
+bert_model.eval()  # Set BERT to evaluation mode
+
+# === Feature extraction functions ===
 def extract_html_features(text):
+    # Extract number of forms, scripts, and links from HTML
     soup = BeautifulSoup(text, "html.parser")
-    return [
-        len(soup.find_all("form")),
-        len(soup.find_all("script")),
-        len(soup.find_all("a")),
-    ]
+    return {
+        "num_forms": len(soup.find_all("form")),
+        "num_scripts": len(soup.find_all("script")),
+        "num_links": len(soup.find_all("a")),
+    }
 
 def extract_lexical_features(text):
-    return [
-        sum(1 for c in text if not c.isalnum() and not c.isspace()),
-        sum(1 for c in text if c.isdigit()),
-        sum(1 for c in text if c.isupper()),
-    ]
+    # Extract lexical features like number of special characters, digits, and uppercase letters
+    return {
+        "num_special_chars": sum(1 for c in text if not c.isalnum() and not c.isspace()),
+        "num_digits": sum(1 for c in text if c.isdigit()),
+        "num_uppercase": sum(1 for c in text if c.isupper()),
+    }
 
 def extract_host_features(text):
+    # Extract domain age using WHOIS data
     try:
         domain = urlparse(text).netloc
         info = whois.whois(domain)
@@ -51,74 +64,72 @@ def extract_host_features(text):
         age = (pd.Timestamp.now() - pd.to_datetime(created)).days if created else 0
     except:
         age = 0
-    return [age]
+    return {"domain_age": age}
 
-# === Predict with MobileBERT ===
-def predict_bert(text):
-    inputs = tokenizer(
-        text,
-        return_tensors="pt",
-        truncation=True,
-        padding=True,
-        max_length=512  # Fixes the warning
-    )
-    with torch.no_grad():
-        outputs = bert_model(**inputs)
-        probs = torch.softmax(outputs.logits, dim=1)
-        return probs[0][1].item()
-
-# === FastAPI Setup ===
-app = FastAPI()
-
-class EmailRequest(BaseModel):
-    email: str
-
-@app.get("/")
-def root():
-    return {"message": "Ensemble API is running."}
-
+# === Prediction endpoint ===
 @app.post("/predict")
 async def predict_email(data: EmailRequest):
-    email_text = data.email
+    # Clean and prepare the input
+    email_text = data.email.strip()
 
-    # Handcrafted features
+    # === MobileBERT prediction ===
+    tokens = tokenizer(email_text, return_tensors="pt", truncation=True, padding="max_length", max_length=128)
+    with torch.no_grad():
+        output = bert_model(**tokens)
+    probs_bert = torch.softmax(output.logits, dim=1).squeeze().numpy()
+    bert_pred = int(np.argmax(probs_bert))
+    bert_conf = float(np.max(probs_bert))
+
+    # === Extract handcrafted features ===
     html_feats = extract_html_features(email_text)
     lexical_feats = extract_lexical_features(email_text)
     host_feats = extract_host_features(email_text)
-    handcrafted = html_feats + lexical_feats + host_feats
 
-    # Vectorized features
-    rf_vec_tfidf = rf_tfidf_vec.transform([email_text]).toarray()
-    rf_vec_count = rf_count_vec.transform([email_text]).toarray()
-    rf_input = np.concatenate((handcrafted, rf_vec_tfidf[0], rf_vec_count[0]))
+    # === Vectorize the input text ===
+    tfidf_vec = tfidf.transform([email_text]).toarray()
+    count_vec = count.transform([email_text]).toarray()
+    xgb_tfidf_vec = xgb_tfidf.transform([email_text]).toarray()
+    xgb_count_vec = xgb_count.transform([email_text]).toarray()
 
-    xgb_vec_tfidf = xgb_tfidf_vec.transform([email_text]).toarray()
-    xgb_vec_count = xgb_count_vec.transform([email_text]).toarray()
-    xgb_input = np.concatenate((handcrafted, xgb_vec_tfidf[0], xgb_vec_count[0]))
+    # === Combine features for RF and XGB ===
+    rf_features = np.concatenate([
+        list(html_feats.values()),
+        list(lexical_feats.values()),
+        list(host_feats.values()),
+        tfidf_vec[0],
+        count_vec[0]
+    ])
+    xgb_features = np.concatenate([
+        list(html_feats.values()),
+        list(lexical_feats.values()),
+        list(host_feats.values()),
+        xgb_tfidf_vec[0],
+        xgb_count_vec[0]
+    ])
 
-    # Model predictions
-    rf_probs = rf_model.predict_proba([rf_input])[0]
-    xgb_probs = xgb_model.predict_proba([xgb_input])[0]
-    rf_conf = float(np.max(rf_probs))
-    xgb_conf = float(np.max(xgb_probs))
+    # === Random Forest prediction ===
+    rf_probs = rf_model.predict_proba(pd.DataFrame([rf_features]))[0]
     rf_pred = int(np.argmax(rf_probs))
+    rf_conf = float(np.max(rf_probs))
+
+    # === XGBoost prediction ===
+    xgb_probs = xgb_model.predict_proba(pd.DataFrame([xgb_features]))[0]
     xgb_pred = int(np.argmax(xgb_probs))
+    xgb_conf = float(np.max(xgb_probs))
 
-    # BERT
-    bert_conf = predict_bert(email_text)
-
-    # Final weighted voting (50% BERT, 25% RF, 25% XGB)
+    # === Ensemble weighted voting ===
     final_score = (
-        0.5 * bert_conf +
-        0.25 * rf_conf * rf_pred +
-        0.25 * xgb_conf * xgb_pred
+        bert_conf * 0.5 * bert_pred +
+        rf_conf * 0.25 * rf_pred +
+        xgb_conf * 0.25 * xgb_pred
     )
-    final_pred = int(final_score >= 0.5)
+    final_pred = 1 if final_score >= 0.5 else 0
 
+    # === Return final results ===
     return {
-        "prediction": final_pred,
-        "confidence": round(final_score, 4),
-        "rf_conf": round(rf_conf, 4),
-        "xgb_conf": round(xgb_conf, 4),
-        "bert_conf": round(bert_conf, 4)
+        "final_prediction": "phishing" if final_pred == 1 else "safe",
+        "final_score": round(final_score, 4),
+        "bert_confidence": round(bert_conf, 4),
+        "rf_confidence": round(rf_conf, 4),
+        "xgb_confidence": round(xgb_conf, 4)
     }
