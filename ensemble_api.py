@@ -12,41 +12,41 @@ from urllib.parse import urlparse  # For extracting domain from email content
 import whois  # For extracting domain age (used as a feature)
 
 # ==== Import Hugging Face transformer tools ====
-from transformers import MobileBertTokenizer, MobileBertForSequenceClassification  # Tokenizer + BERT model
+from transformers import MobileBertTokenizer, MobileBertForSequenceClassification
 
 # ==== Import FastAPI tools ====
-from fastapi import FastAPI  # Framework for building the API
-from pydantic import BaseModel  # Validates incoming JSON requests
+from fastapi import FastAPI
+from pydantic import BaseModel
 
-# ==== Initialize the FastAPI application ====
+# ==== Initialize FastAPI ====
 app = FastAPI()
 
-# ==== Root endpoint just to verify if service is alive ====
+# ==== Root endpoint just to verify API is up ====
 @app.get("/")
 def root():
-    return {"status": "API is running"}  # Basic health check route
+    return {"status": "API is running"}
 
-# ==== Define the input structure for the /predict endpoint ====
+# ==== Define expected request format ====
 class EmailRequest(BaseModel):
-    email: str  # Expecting a single email body as text
+    email: str
 
-# ==== Load ML models trained earlier and saved as .pkl ====
-rf_model = joblib.load("random_forest_model.pkl")  # Load Random Forest model
-xgb_model = joblib.load("xgboost_model.pkl")  # Load XGBoost model
+# ==== Load trained models ====
+rf_model = joblib.load("random_forest_model.pkl")
+xgb_model = joblib.load("xgboost_model.pkl")
 
-# ==== Load the vectorizers used to transform email text into numeric format ====
-tfidf = joblib.load("tfidf_vectorizer.pkl")  # For RF model
-count = joblib.load("count_vectorizer.pkl")  # For RF model
-xgb_tfidf = joblib.load("xgb_tfidf_vectorizer.pkl")  # For XGB model
-xgb_count = joblib.load("xgb_count_vectorizer.pkl")  # For XGB model
+# ==== Load vectorizers ====
+tfidf = joblib.load("tfidf_vectorizer.pkl")
+count = joblib.load("count_vectorizer.pkl")
+xgb_tfidf = joblib.load("xgb_tfidf_vectorizer.pkl")
+xgb_count = joblib.load("xgb_count_vectorizer.pkl")
 
-# ==== Load the fine-tuned MobileBERT model and its tokenizer ====
-bert_path = "./mobilebert_combined_model"  # Folder containing BERT model files
-tokenizer = MobileBertTokenizer.from_pretrained(bert_path)  # Load tokenizer
-bert_model = MobileBertForSequenceClassification.from_pretrained(bert_path)  # Load model
-bert_model.eval()  # Set model to evaluation mode (important for inference)
+# ==== Load fine-tuned MobileBERT from local path ====
+bert_path = "./"  # Assuming files are in the same folder as this script
+tokenizer = MobileBertTokenizer.from_pretrained(bert_path, local_files_only=True)
+bert_model = MobileBertForSequenceClassification.from_pretrained(bert_path, local_files_only=True)
+bert_model.eval()  # Set to evaluation mode
 
-# ==== Extract HTML-based features like number of links, forms, and scripts ====
+# ==== Feature extraction functions ====
 def extract_html_features(text):
     soup = BeautifulSoup(text, "html.parser")
     return {
@@ -55,7 +55,6 @@ def extract_html_features(text):
         "num_links": len(soup.find_all("a")),
     }
 
-# ==== Extract lexical features like punctuation count, uppercase, and digits ====
 def extract_lexical_features(text):
     return {
         "num_special_chars": sum(1 for c in text if not c.isalnum() and not c.isspace()),
@@ -63,46 +62,38 @@ def extract_lexical_features(text):
         "num_uppercase": sum(1 for c in text if c.isupper()),
     }
 
-# ==== Extract WHOIS-based feature: domain age (in days) ====
 def extract_host_features(text):
     try:
-        domain = urlparse(text).netloc  # Extract domain
-        info = whois.whois(domain)  # Query WHOIS for domain creation date
+        domain = urlparse(text).netloc
+        info = whois.whois(domain)
         created = info.creation_date[0] if isinstance(info.creation_date, list) else info.creation_date
-        age = (pd.Timestamp.now() - pd.to_datetime(created)).days if created else 0  # Age in days
+        age = (pd.Timestamp.now() - pd.to_datetime(created)).days if created else 0
     except Exception as e:
         print(f"WHOIS lookup failed: {e}")
         age = 0
     return {"domain_age": age}
 
-# ==== Main prediction endpoint ====
+# ==== Prediction endpoint ====
 @app.post("/predict")
 async def predict_email(data: EmailRequest):
-    # Step 1: Clean email input text
     email_text = data.email.strip()
 
-    # Step 2: Tokenize the email text for MobileBERT
+    # Tokenize email for MobileBERT
     tokens = tokenizer(email_text, return_tensors="pt", truncation=True, padding="max_length", max_length=128)
-
-    # Step 3: Get prediction and confidence from MobileBERT
     with torch.no_grad():
         output = bert_model(**tokens)
-    probs_bert = torch.softmax(output.logits, dim=1).squeeze().numpy()  # Convert logits to probabilities
-    bert_pred = int(np.argmax(probs_bert))  # Predicted class (0 or 1)
-    bert_conf = float(np.max(probs_bert))  # Confidence score of predicted class
+    probs_bert = torch.softmax(output.logits, dim=1).squeeze().numpy()
+    bert_pred = int(np.argmax(probs_bert))
+    bert_conf = float(np.max(probs_bert))
 
-    # Step 4: Extract handcrafted features for RF/XGB
+    # Extract handcrafted features
     html_feats = extract_html_features(email_text)
     lexical_feats = extract_lexical_features(email_text)
     host_feats = extract_host_features(email_text)
 
-    # Step 5: Convert email text to vectorized features for each model
+    # Vectorize for RF
     tfidf_vec = tfidf.transform([email_text]).toarray()
     count_vec = count.transform([email_text]).toarray()
-    xgb_tfidf_vec = xgb_tfidf.transform([email_text]).toarray()
-    xgb_count_vec = xgb_count.transform([email_text]).toarray()
-
-    # Step 6: Combine handcrafted + vectorized features for Random Forest
     rf_features = np.concatenate([
         list(html_feats.values()),
         list(lexical_feats.values()),
@@ -111,7 +102,9 @@ async def predict_email(data: EmailRequest):
         count_vec[0]
     ])
 
-    # Step 7: Combine handcrafted + vectorized features for XGBoost
+    # Vectorize for XGB
+    xgb_tfidf_vec = xgb_tfidf.transform([email_text]).toarray()
+    xgb_count_vec = xgb_count.transform([email_text]).toarray()
     xgb_features = np.concatenate([
         list(html_feats.values()),
         list(lexical_feats.values()),
@@ -120,28 +113,26 @@ async def predict_email(data: EmailRequest):
         xgb_count_vec[0]
     ])
 
-    # Step 8: Get prediction and confidence from RF
+    # Predict using RF
     rf_probs = rf_model.predict_proba(pd.DataFrame([rf_features]))[0]
     rf_pred = int(np.argmax(rf_probs))
     rf_conf = float(np.max(rf_probs))
 
-    # Step 9: Get prediction and confidence from XGB
+    # Predict using XGB
     xgb_probs = xgb_model.predict_proba(pd.DataFrame([xgb_features]))[0]
     xgb_pred = int(np.argmax(xgb_probs))
     xgb_conf = float(np.max(xgb_probs))
 
-    # Step 10: Compute final score using weighted ensemble voting
+    # Weighted ensemble
     final_score = (
-        bert_conf * 0.5 * bert_pred +  # BERT contributes 50%
-        rf_conf * 0.25 * rf_pred +    # RF contributes 25%
-        xgb_conf * 0.25 * xgb_pred    # XGB contributes 25%
+        bert_conf * 0.5 * bert_pred +
+        rf_conf * 0.25 * rf_pred +
+        xgb_conf * 0.25 * xgb_pred
     )
-    final_pred = 1 if final_score >= 0.5 else 0  # Predict phishing if score ≥ 0.5
+    final_pred = 1 if final_score >= 0.5 else 0
 
-    # Optional: Log result to server console
     print(f"[PREDICTION] Final: {final_pred} | Score: {final_score:.4f} | BERT: {bert_conf:.4f}, RF: {rf_conf:.4f}, XGB: {xgb_conf:.4f}")
 
-    # Step 11: Return only relevant values to the app
     return {
         "final_prediction": "phishing" if final_pred == 1 else "safe",
         "final_score": round(final_score, 4),
