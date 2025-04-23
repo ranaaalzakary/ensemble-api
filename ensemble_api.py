@@ -41,9 +41,9 @@ xgb_tfidf = joblib.load("xgb_tfidf_vectorizer.pkl")
 xgb_count = joblib.load("xgb_count_vectorizer.pkl")
 
 # ==== Load fine-tuned MobileBERT from local path ====
-bert_path = "./"  # Assuming files are in the same folder as this script
-tokenizer = MobileBertTokenizer.from_pretrained(bert_path, local_files_only=True)
-bert_model = MobileBertForSequenceClassification.from_pretrained(bert_path, local_files_only=True)
+bert_path = "./mobilebert_final_model"
+tokenizer = MobileBertTokenizer.from_pretrained(bert_path)
+bert_model = MobileBertForSequenceClassification.from_pretrained(bert_path)
 bert_model.eval()  # Set to evaluation mode
 
 # ==== Feature extraction functions ====
