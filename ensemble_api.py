@@ -23,7 +23,7 @@ from pydantic import BaseModel
 app = FastAPI()
 
 # ==== API Key Validation Middleware ====
-API_KEY = os.getenv("TRACEIT_API_KEY")
+API_KEY = "f1772bb892b59a116b70db13a4b4722b"  # Hardcoded for testing
 
 @app.middleware("http")
 async def verify_api_key(request: Request, call_next):
