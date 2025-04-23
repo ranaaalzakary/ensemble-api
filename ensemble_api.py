@@ -10,16 +10,28 @@ import pandas as pd  # For tabular feature handling
 from bs4 import BeautifulSoup  # For stripping HTML tags from email content
 from urllib.parse import urlparse  # For extracting domain from email content
 import whois  # For extracting domain age (used as a feature)
+import os
 
 # ==== Import Hugging Face transformer tools ====
 from transformers import MobileBertTokenizer, MobileBertForSequenceClassification
 
 # ==== Import FastAPI tools ====
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException, status
 from pydantic import BaseModel
 
 # ==== Initialize FastAPI ====
 app = FastAPI()
+
+# ==== API Key Validation Middleware ====
+API_KEY = os.getenv("TRACEIT_API_KEY")
+
+@app.middleware("http")
+async def verify_api_key(request: Request, call_next):
+    if request.url.path != "/" and request.method == "POST":
+        auth = request.headers.get("Authorization")
+        if auth != f"Bearer {API_KEY}":
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API token")
+    return await call_next(request)
 
 # ==== Root endpoint just to verify API is up ====
 @app.get("/")
